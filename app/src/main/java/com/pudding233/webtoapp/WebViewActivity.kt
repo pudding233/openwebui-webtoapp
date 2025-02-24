@@ -1,21 +1,61 @@
 package com.pudding233.webtoapp
 
+import android.Manifest
+import android.app.Activity
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Bundle
-import android.webkit.WebView
-import android.webkit.WebViewClient
-import android.webkit.WebChromeClient
-import android.webkit.WebSettings
+import android.webkit.*
 import android.view.View
 import android.graphics.Color
 import android.view.WindowManager
+import android.webkit.ValueCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import com.pudding233.webtoapp.cache.CacheManager
 import com.pudding233.webtoapp.web.CachingWebViewClient
 
 class WebViewActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private lateinit var cacheManager: CacheManager
+    private var filePathCallback: ValueCallback<Array<Uri>>? = null
     
+    // 文件选择器启动器
+    private val fileChooserLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val data: Intent? = result.data
+            val results = if (data?.clipData != null) { // 处理多个文件
+                val count = data.clipData!!.itemCount
+                Array(count) { i -> data.clipData!!.getItemAt(i).uri }
+            } else if (data?.data != null) { // 处理单个文件
+                arrayOf(data.data!!)
+            } else {
+                null
+            }
+            filePathCallback?.onReceiveValue(results ?: arrayOf())
+        } else {
+            filePathCallback?.onReceiveValue(arrayOf())
+        }
+        filePathCallback = null
+    }
+
+    // 权限请求启动器
+    private val permissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        if (permissions.all { it.value }) {
+            openFileChooser()
+        } else {
+            filePathCallback?.onReceiveValue(arrayOf())
+            filePathCallback = null
+        }
+    }
+
     private val paddingScript = """
         function adjustPadding() {
             const mainContent = document.querySelector('.h-screen.max-h-\\[100dvh\\].transition-width.duration-200.ease-in-out.w-full.max-w-full.flex.flex-col');
@@ -82,6 +122,9 @@ class WebViewActivity : AppCompatActivity() {
             cacheMode = WebSettings.LOAD_DEFAULT
             databaseEnabled = true
             domStorageEnabled = true
+            // 添加文件访问支持
+            allowFileAccess = true
+            allowContentAccess = true
         }
 
         // 使用自定义的WebViewClient
@@ -93,8 +136,54 @@ class WebViewActivity : AppCompatActivity() {
             }
         }
 
+        // 设置WebChromeClient处理文件上传
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onShowFileChooser(
+                webView: WebView,
+                filePathCallback: ValueCallback<Array<Uri>>,
+                fileChooserParams: FileChooserParams
+            ): Boolean {
+                this@WebViewActivity.filePathCallback?.onReceiveValue(arrayOf())
+                this@WebViewActivity.filePathCallback = filePathCallback
+
+                checkAndRequestPermissions()
+                return true
+            }
+        }
+
         // 加载网页
         webView.loadUrl("https://chat.furryowo.top/")
+    }
+
+    private fun checkAndRequestPermissions() {
+        val permissions = if (android.os.Build.VERSION.SDK_INT >= 33) {
+            arrayOf(
+                Manifest.permission.READ_MEDIA_IMAGES,
+                Manifest.permission.READ_MEDIA_VIDEO,
+                Manifest.permission.READ_MEDIA_AUDIO
+            )
+        } else {
+            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+
+        val notGrantedPermissions = permissions.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }.toTypedArray()
+
+        if (notGrantedPermissions.isEmpty()) {
+            openFileChooser()
+        } else {
+            permissionLauncher.launch(notGrantedPermissions)
+        }
+    }
+
+    private fun openFileChooser() {
+        val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+        }
+        fileChooserLauncher.launch(intent)
     }
 
     // 处理返回按钮
